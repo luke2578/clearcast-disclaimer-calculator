@@ -7,15 +7,11 @@ WORDS_TO_IGNORE_IN_NUMBERS = {"hundred", "thousand", "and"}
 FRAMES_PER_SECOND = 25
 MONTHS = ["january", "february", "march", "april", "may", "june",
           "july", "august", "september", "october", "november", "december"]
-SYMBOL_WORDS = ["percent", "pounds", "euros"]
 
-# --- Core Logic (Copied from V1.4) ---
+# --- Core Logic ---
 
 def convert_number_smart(number_val):
-    """
-    Smart logic to handle specific number ranges for ad clearance.
-    """
-    # RANGE 1: 1100 - 1999 (The "Teen Hundreds" Fix)
+    """Smart logic to handle specific number ranges for ad clearance."""
     if 1100 <= number_val <= 1999:
         hundreds = number_val // 100
         remainder = number_val % 100
@@ -23,177 +19,187 @@ def convert_number_smart(number_val):
         if remainder > 0:
             text += f" and {num2words(remainder)}"
         return text
-
-    # RANGE 2: 2010 - 2099 (Modern Years)
     if 2010 <= number_val <= 2099:
         return num2words(number_val, to='year')
-
-    # RANGE 3: Standard reading for everything else
     return num2words(number_val)
 
-def get_unique_words(text):
-    """Gets a list of unique, countable words, preserving order."""
+def clean_and_tokenize(text, exclusions=""):
+    """
+    Splits text while respecting Clearcast 'interpretation' rules:
+    1. Abbreviations (T&Cs, p.a., ROI) -> 1 word
+    2. Postcodes -> 2 words
+    3. URLs -> 1 word
+    4. Brand Names -> Removed (0 words)
+    """
     if not text:
         return []
 
-    url_regex = r'(?:https?://)?(?:www\.)?([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}'
-    text_for_counting = re.sub(url_regex, ' websiteurl ', text)
+    # 1. Remove Brand Names / Exclusions first
+    if exclusions:
+        exclusion_list = [e.strip() for e in exclusions.split(',')]
+        for excl in exclusion_list:
+            if excl:
+                # Case-insensitive removal of exact phrases
+                pattern = re.compile(re.escape(excl), re.IGNORECASE)
+                text = pattern.sub(" ", text)
 
-    parts = re.split(r'(\d+)', text_for_counting)
+    # 2. Protect URLs (replace with placeholder token)
+    url_regex = r'(?:https?://)?(?:www\.)?([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(?:/[^\s]*)?'
+    text = re.sub(url_regex, 'TOKEN_URL', text)
+
+    # 3. Protect Postcodes (UK Format) -> Replace with 2 tokens
+    # Matches: SW1A 1AA, M1 1AA, etc.
+    postcode_regex = r'\b[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}\b'
+    text = re.sub(postcode_regex, 'TOKEN_POSTCODE_1 TOKEN_POSTCODE_2', text, flags=re.IGNORECASE)
+
+    # 4. Protect Common Abbreviations -> Replace with single token
+    # T&Cs, p.a., ROI, etc.
+    abbreviations = [
+        (r'\bT&Cs\b', 'TOKEN_ABBREV'),
+        (r'\bT\s?&\s?Cs\b', 'TOKEN_ABBREV'), # Handles T & Cs
+        (r'\bp\.?a\.?\b', 'TOKEN_ABBREV'),   # Handles p.a.
+        (r'\bR\.?O\.?I\.?\b', 'TOKEN_ABBREV'), # Handles ROI
+    ]
+    for pattern, token in abbreviations:
+        text = re.sub(pattern, token, text, flags=re.IGNORECASE)
+
+    # 5. Split remaining text by numbers to process them
+    parts = re.split(r'(\d+)', text)
     
-    number_generated_words = []
-    manual_words_in_order = []
-
+    final_tokens = []
+    
     for part in parts:
         if part.isdigit():
-            number_val = int(part)
-            spoken_number = convert_number_smart(number_val)
-            words_from_number = re.findall(r'\b\w+\b', spoken_number.lower())
-            counted_words_from_number = [w for w in words_from_number if w not in WORDS_TO_IGNORE_IN_NUMBERS]
-            number_generated_words.extend(counted_words_from_number)
+            # Convert number to words
+            spoken_number = convert_number_smart(int(part))
+            # Tokenize the spoken number
+            words = re.findall(r'\b\w+\b', spoken_number.lower())
+            # Remove invisible counters (hundred, thousand, and)
+            valid_words = [w for w in words if w not in WORDS_TO_IGNORE_IN_NUMBERS]
+            final_tokens.extend(valid_words)
         else:
-            manual_words = re.findall(r'\b\w+\b', part.lower())
-            manual_words_in_order.extend(manual_words)
+            # Standard tokenizer for text parts
+            # matches words or our specific TOKEN_ strings
+            words = re.findall(r'\b[\w&]+\b', part)
+            final_tokens.extend(words)
 
-    seen_manual_words = set()
-    unique_manual_words = []
-    for word in manual_words_in_order:
-        if word not in seen_manual_words:
-            seen_manual_words.add(word)
-            unique_manual_words.append(word)
+    return final_tokens
+
+def calculate_duration(word_count):
+    if word_count == 0:
+        return 0, 0
     
-    return unique_manual_words + number_generated_words
-
-def get_spoken_text(text):
-    """Gets the display-friendly version of text."""
-    if not text:
-        return ""
-    parts_for_display = re.split(r'(\d+)', text)
-    spoken_phrases = []
-    for part in parts_for_display:
-        if part.isdigit():
-            spoken_phrases.append(convert_number_smart(int(part)))
-        else:
-            spoken_phrases.append(part)
-    return "".join(spoken_phrases)
+    rt = 3.0 if word_count >= 10 else 2.0
+    # Formula: (Words * 0.2) + Recognition Time
+    duration = (word_count * 0.2) + rt
+    return duration, rt
 
 # --- Streamlit UI ---
 
-st.set_page_config(page_title="Clearcast Disclaimer Calculator", layout="wide")
-
-st.title("Clearcast Disclaimer Calculator V1.4")
-st.markdown("This tool calculates the duration of disclaimer text based on Clearcast/Ad guidance.")
+st.set_page_config(page_title="Clearcast Calculator", layout="wide")
+st.title("Clearcast Disclaimer Calculator")
+st.markdown("""
+This tool calculates hold duration based on **Clearcast & BCAP** guidance.
+**V1.5 Updates:**
+* **Abbreviations:** 'T&Cs', 'p.a.', 'ROI' count as **1 word**.
+* **Postcodes:** Count as **2 words**.
+* **Brand Names:** Can be excluded from the count.
+""")
 
 col1, col2 = st.columns([1, 1])
 
 with col1:
     st.subheader("Input")
+    main_text = st.text_area("Disclaimer Text", height=150, help="Enter the legal text here.")
     
-    main_text = st.text_area("Disclaimer Text (Main)", height=150, help="Enter the main disclaimer text here.")
-    
-    has_additional = st.checkbox("Include Additional/Split Text?")
+    with st.expander("Exclusions & Options"):
+        brand_exclusions = st.text_input("Brand Names to Exclude (comma separated)", 
+                                         help="E.g. 'Nike, Adidas'. These words will not be counted.")
+        has_additional = st.checkbox("Include Additional/Split Text?")
     
     add_text = ""
     if has_additional:
-        st.info("Enter any additional text that appears at a different time while the disclaimer is held.")
+        st.info("Additional text appearing at a different time:")
         add_text = st.text_area("Additional Text", height=100)
 
-    # Calculate Button
-    if st.button("Calculate Duration", type="primary"):
-        do_calc = True
-    else:
-        do_calc = False
+    calc_btn = st.button("Calculate Duration", type="primary")
 
 with col2:
     st.subheader("Results")
 
-    if do_calc and (main_text or add_text):
-        # --- Calculations ---
-        # 1. Main Text
-        main_cw = get_unique_words(main_text)
-        main_wc = len(main_cw)
-        main_rt = 3.0 if main_wc >= 10 else 2.0
-        main_duration = (main_wc * 0.2) + main_rt if main_wc > 0 else 0
-        main_st = get_spoken_text(main_text)
+    if calc_btn and (main_text or add_text):
+        # 1. Tokenize Main
+        main_tokens = clean_and_tokenize(main_text, brand_exclusions)
+        # De-duplicate MAIN text (Standard rule: unique words only)
+        # Note: We maintain order for display but use set for counting if required. 
+        # *However*, usually duration is based on unique words in the block.
+        # Let's use the standard "Unique Words" approach.
+        main_unique = []
+        seen = set()
+        for w in main_tokens:
+            w_lower = w.lower()
+            if w_lower not in seen:
+                seen.add(w_lower)
+                main_unique.append(w)
+        
+        main_wc = len(main_unique)
+        main_dur, main_rt = calculate_duration(main_wc)
 
-        # 2. Additional Text
-        add_duration = 0
-        add_wc = 0
-        add_rt = 0
-        add_st = ""
-        add_cw = []
+        # 2. Tokenize Additional
+        add_dur, add_wc, add_rt = 0, 0, 0
+        add_unique_new = []
         
         if has_additional and add_text:
-            add_st = get_spoken_text(add_text)
-            all_add_words = get_unique_words(add_text)
-            main_words_set = set(main_cw)
-            # Filter words already counted in main
-            add_cw = [w for w in all_add_words if w not in main_words_set]
-            add_wc = len(add_cw)
-            add_rt = 3.0 if add_wc >= 10 else 2.0
-            add_duration = (add_wc * 0.2) + add_rt if add_wc > 0 else 0
+            add_tokens = clean_and_tokenize(add_text, brand_exclusions)
+            # Filter out words already counted in Main
+            main_set_lower = {t.lower() for t in main_unique}
+            
+            for w in add_tokens:
+                if w.lower() not in main_set_lower and w.lower() not in seen:
+                    seen.add(w.lower())
+                    add_unique_new.append(w)
+            
+            add_wc = len(add_unique_new)
+            add_dur, add_rt = calculate_duration(add_wc)
 
-        total_duration = main_duration + add_duration
+        total_dur = main_dur + add_dur
 
-        # --- Display Total ---
-        st.metric(label="Total Duration", value=f"{total_duration:.1f}s")
+        # --- Display ---
+        st.metric(label="Total Duration", value=f"{total_dur:.1f}s")
+        if total_dur > 0:
+            whole_sec = int(total_dur)
+            frames = round((total_dur - whole_sec) * FRAMES_PER_SECOND)
+            st.caption(f"({whole_sec} seconds and {frames} frames)")
         
-        if total_duration > 0:
-            whole_seconds = int(total_duration)
-            frames = round((total_duration - whole_seconds) * FRAMES_PER_SECOND)
-            st.caption(f"({whole_seconds} seconds and {frames} frames)")
-
         st.divider()
-
-        # --- Breakdowns ---
+        
+        # Breakdown
         if main_wc > 0:
-            with st.expander("Main Disclaimer Breakdown", expanded=True):
-                st.write(f"**Sub-Total:** {main_duration:.1f}s")
-                st.write(f"- Counted Words: {main_wc}")
-                st.write(f"- Text Hold: {main_wc * 0.2:.1f}s")
-                st.write(f"- Recognition: {main_rt:.1f}s")
-                st.text(f"Interpreted As: {main_st}")
-                st.caption(f"Countable Words: {', '.join(main_cw)}")
-
-        if has_additional and add_text:
-            with st.expander("Additional Text Breakdown", expanded=True):
-                st.write(f"**Sub-Total:** {add_duration:.1f}s")
-                st.write(f"- Counted Words: {add_wc}")
-                st.write(f"- Text Hold: {add_wc * 0.2:.1f}s")
-                st.write(f"- Recognition: {add_rt:.1f}s")
-                st.text(f"Interpreted As: {add_st}")
-                st.caption(f"Countable Words (New unique words only): {', '.join(add_cw)}")
-
-        # --- Tips Section ---
-        st.subheader("Optimization Tips")
-        full_text_lower = (main_text + " " + add_text).lower()
+            st.write(f"**Main Text:** {main_wc} words ({main_dur:.1f}s)")
+            with st.expander("View Counted Words"):
+                st.write(", ".join(main_unique))
         
-        tips = []
-        if has_additional and add_wc > 0:
-            display_snip = add_text[:17] + "..." if len(add_text) > 20 else add_text
-            tips.append(f"Consider adding '{display_snip}' to the main disclaimer to save {add_rt:.1f}s of recognition time.")
-        
-        if re.search(r'\band\b', full_text_lower):
-            tips.append("Replace 'and' with '&' to reduce the word count.")
-            
-        if "terms and conditions" in full_text_lower:
-            tips.append("Use 'T&Cs apply' instead of 'Terms and conditions apply' to save 2 words (0.4s).")
-            
-        if any(month in full_text_lower for month in MONTHS):
-            tips.append("Writing dates out in full is lengthy. Consider using numerals (e.g., '25.12.25').")
-            
-        if "per week" in full_text_lower or "per month" in full_text_lower:
-            tips.append("Use '/week' or '/month' instead of 'per week'/'per month' to save a word.")
+        if add_wc > 0:
+            st.write(f"**Additional Text:** {add_wc} words ({add_dur:.1f}s)")
+            with st.expander("View New Unique Words"):
+                st.write(", ".join(add_unique_new))
 
-        if tips:
-            for tip in tips:
-                st.warning(tip, icon="💡")
-        else:
-            st.success("No optimization tips found!", icon="✅")
+    elif calc_btn:
+        st.warning("Please enter text.")
 
-    elif do_calc:
-        st.warning("Please enter some text to calculate.")
-
-# Footer
+# --- Optimization Tips ---
 st.markdown("---")
-st.caption("This tool is for guidance only. Always verify with Clearcast.")
+st.subheader("Smart Optimization Tips")
+tips = []
+full_text = (main_text + " " + add_text)
+
+if "Terms and Conditions" in full_text:
+    tips.append("**Huge Saving:** Change 'Terms and Conditions' (3 words) to 'T&Cs' (1 word). Saves 0.4s.")
+if "per annum" in full_text.lower():
+    tips.append("**Quick Fix:** Change 'per annum' (2 words) to 'p.a.' (1 word). Saves 0.2s.")
+if "Republic of Ireland" in full_text:
+    tips.append("**Quick Fix:** Change 'Republic of Ireland' (3 words) to 'ROI' (1 word). Saves 0.4s.")
+
+if tips and (main_text or add_text):
+    for tip in tips:
+        st.info(tip)
