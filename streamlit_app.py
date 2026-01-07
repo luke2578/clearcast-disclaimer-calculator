@@ -7,14 +7,13 @@ WORDS_TO_IGNORE_IN_NUMBERS = {"hundred", "thousand", "and"}
 FRAMES_PER_SECOND = 25
 MONTHS = ["january", "february", "march", "april", "may", "june",
           "july", "august", "september", "october", "november", "december"]
+# specific words to watch for tips
+SYMBOL_WORDS = ["percent", "pounds", "euros"] 
 
 # --- Core Logic ---
 
 def convert_number_smart(number_val):
-    """
-    Smart logic to handle specific number ranges for ad clearance.
-    """
-    # Range 1: 1100 - 1999 (The "Teen Hundreds" Fix)
+    """Smart logic to handle specific number ranges for ad clearance."""
     if 1100 <= number_val <= 1999:
         hundreds = number_val // 100
         remainder = number_val % 100
@@ -22,22 +21,12 @@ def convert_number_smart(number_val):
         if remainder > 0:
             text += f" and {num2words(remainder)}"
         return text
-        
-    # Range 2: 2010 - 2099 (Modern Years)
     if 2010 <= number_val <= 2099:
         return num2words(number_val, to='year')
-        
-    # Range 3: Standard
     return num2words(number_val)
 
 def extract_tokens(text, exclusions=""):
-    """
-    Parses text into two distinct lists:
-    1. text_tokens: Manual words (T&Cs, legal text, etc.)
-    2. number_strings: Raw number strings (1139, 2024, etc.)
-    
-    This separation allows us to de-duplicate numbers differently from text.
-    """
+    """Parses text into text_tokens and number_strings."""
     if not text:
         return [], []
 
@@ -62,7 +51,7 @@ def extract_tokens(text, exclusions=""):
     url_regex = r'(?:https?://)?(?:www\.)?([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(?:/[^\s]*)?'
     text = re.sub(url_regex, 'SAFE_TOKEN_URL', text)
 
-    # 4. Protect Postcodes (UK Format) -> Ensure space exists
+    # 4. Protect Postcodes
     postcode_regex = r'\b([A-Z]{1,2}\d[A-Z\d]?)\s*(\d[A-Z]{2})\b'
     text = re.sub(postcode_regex, r'\1 \2', text, flags=re.IGNORECASE)
 
@@ -84,10 +73,8 @@ def extract_tokens(text, exclusions=""):
     
     for part in parts:
         if part.isdigit():
-            # Keep raw number string for later unique check
             number_strings.append(part)
         else:
-            # Tokenize text
             raw_tokens = re.findall(r'\b[\w&]+\b', part)
             for t in raw_tokens:
                 if t in token_map:
@@ -98,15 +85,10 @@ def extract_tokens(text, exclusions=""):
     return text_tokens, number_strings
 
 def calculate_word_lists(text_tokens, number_strings):
-    """
-    Performs the counting logic:
-    1. Text: De-duplicated by word (Standard).
-    2. Numbers: De-duplicated by NUMBER, then expanded into words.
-       (e.g., 1139 and 1199 are distinct, so all their words count).
-    """
+    """Counts logic: Text (unique words), Numbers (unique number strings)."""
     final_display_list = []
     
-    # 1. Process Manual Text (Unique Case-Insensitive)
+    # 1. Process Manual Text
     unique_text = []
     seen_text = set()
     for w in text_tokens:
@@ -116,24 +98,16 @@ def calculate_word_lists(text_tokens, number_strings):
             unique_text.append(w)
             final_display_list.append(w)
             
-    # 2. Process Numbers (Unique Number String)
-    # If "1139" appears twice, we only process it once.
-    # But if "1139" and "1199" appear, we process BOTH, even if they share words.
+    # 2. Process Numbers
     seen_numbers = set()
     number_words_count = 0
     
     for num_str in number_strings:
         if num_str not in seen_numbers:
             seen_numbers.add(num_str)
-            
-            # Convert this specific number to words
             spoken = convert_number_smart(int(num_str))
             words = re.findall(r'\b\w+\b', spoken.lower())
-            
-            # Add valid words to the count and display list
-            # We do NOT check 'seen_text' here. Numbers are independent.
             valid_words = [w for w in words if w not in WORDS_TO_IGNORE_IN_NUMBERS]
-            
             number_words_count += len(valid_words)
             final_display_list.extend(valid_words)
             
@@ -152,9 +126,7 @@ def calculate_duration(word_count):
 st.set_page_config(page_title="Clearcast Calculator", layout="wide")
 
 st.title("Clearcast Disclaimer Calculator")
-st.markdown("""
-This tool calculates hold duration based on **Clearcast & BCAP** guidance.
-""")
+st.markdown("This tool calculates hold duration based on **Clearcast & BCAP** guidance.")
 
 col1, col2 = st.columns([1, 1])
 
@@ -174,6 +146,10 @@ with col1:
 
     calc_btn = st.button("Calculate Duration", type="primary")
 
+# Variables to hold results for tips section
+main_wc, main_dur, main_rt = 0, 0, 0
+add_wc, add_dur, add_rt = 0, 0, 0
+
 with col2:
     st.subheader("Results")
 
@@ -184,17 +160,13 @@ with col2:
         main_dur, main_rt = calculate_duration(main_wc)
 
         # 2. Process Additional
-        add_dur, add_wc, add_rt = 0, 0, 0
         add_display_list = []
-        
         if has_additional and add_text:
             add_text_tokens, add_num_strings = extract_tokens(add_text, brand_exclusions)
-            
-            # Filter Additional Text against Main Text (Standard Unique Logic)
+            # Filter against Main
             main_text_set = {t.lower() for t in main_text_tokens}
             unique_add_tokens = [t for t in add_text_tokens if t.lower() not in main_text_set]
             
-            # Filter Additional Numbers against Main Numbers
             main_num_set = set(main_num_strings)
             unique_add_nums = [n for n in add_num_strings if n not in main_num_set]
             
@@ -205,7 +177,6 @@ with col2:
 
         # --- Display ---
         st.metric(label="Total Duration", value=f"{total_dur:.1f}s")
-        
         if total_dur > 0:
             whole_sec = int(total_dur)
             frames = round((total_dur - whole_sec) * FRAMES_PER_SECOND)
@@ -231,19 +202,52 @@ with col2:
     elif calc_btn:
         st.warning("Please enter some text to calculate.")
 
-# --- Tips ---
+# --- Smart Tips Section ---
 st.markdown("---")
 st.subheader("Smart Optimization Tips")
 tips = []
-full_text_lower = (main_text + " " + add_text).lower()
+full_text = (main_text + " " + add_text)
+full_text_lower = full_text.lower()
 
+# 1. Merge Text Tip (Restored from V1.2)
+if has_additional and add_wc > 0:
+    # If added to main, you save the 'add_rt' (Recognition Time)
+    saving = add_rt
+    display_snip = add_text[:20] + "..." if len(add_text) > 20 else add_text
+    tips.append(f"**Structure:** Consider merging '{display_snip}' into the main disclaimer to save **{saving:.1f}s** (Recognition Time).")
+
+# 2. Symbol Words (Restored from V1.2)
+if any(word in full_text_lower for word in SYMBOL_WORDS):
+     tips.append("**Symbols:** Using symbols (£, €, %, &) instead of full words ('pounds', 'percent') does not add to the word count.")
+
+# 3. T&Cs
 if "terms and conditions" in full_text_lower:
-    tips.append("**Huge Saving:** Change 'Terms and Conditions' (3 words) to 'T&Cs' (1 word).")
+    tips.append("**Huge Saving:** Change 'Terms and Conditions' (3 words) to 'T&Cs' (1 word). Saves 0.4s.")
+elif "terms & conditions" in full_text_lower:
+    tips.append("**Quick Fix:** Change 'Terms & Conditions' to 'T&Cs'. Saves 1 word (0.2s).")
+
+# 4. "And"
+if re.search(r'\band\b', full_text_lower):
+    tips.append("**Space Saving:** Replace 'and' with '&' to reduce word count.")
+
+# 5. Abbreviations
 if "per annum" in full_text_lower:
-    tips.append("**Quick Fix:** Change 'per annum' (2 words) to 'p.a.' (1 word).")
+    tips.append("**Quick Fix:** Change 'per annum' (2 words) to 'p.a.' (1 word). Saves 0.2s.")
 if "republic of ireland" in full_text_lower:
-    tips.append("**Quick Fix:** Change 'Republic of Ireland' (3 words) to 'ROI' (1 word).")
+    tips.append("**Quick Fix:** Change 'Republic of Ireland' (3 words) to 'ROI' (1 word). Saves 0.4s.")
+
+# 6. Formatting
+if any(month in full_text_lower for month in MONTHS):
+    tips.append("**Formatting:** Writing dates out in full (e.g. 'January') is lengthy. Consider using numerals (e.g., '25.12.25').")
+if "per week" in full_text_lower or "per month" in full_text_lower:
+     tips.append("**Formatting:** Use '/week' or '/month' instead of 'per week'/'per month' to save a word.")
 
 if tips and (main_text or add_text):
     for tip in tips:
         st.info(tip, icon="💡")
+elif (main_text or add_text):
+    st.success("No obvious optimizations found. Good job!", icon="✅")
+
+# Footer
+st.markdown("---")
+st.caption("This tool is for guidance only. Always verify with Clearcast.")
