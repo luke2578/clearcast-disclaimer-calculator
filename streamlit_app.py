@@ -154,9 +154,6 @@ st.set_page_config(page_title="Clearcast Calculator", layout="wide")
 st.title("Clearcast Disclaimer Calculator")
 st.markdown("""
 This tool calculates hold duration based on **Clearcast & BCAP** guidance.
-**V1.7 Logic Update:**
-* **Numbers:** Treated individually. `1139` and `1199` are counted separately (no cross-cancellation of words).
-* **Duplicates:** Only identical numbers (e.g., `1139` appearing twice) are de-duplicated.
 """)
 
 col1, col2 = st.columns([1, 1])
